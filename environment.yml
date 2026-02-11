@@ -1,0 +1,13 @@
+name: mai-upres
+channels:
+  - nvidia
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.13
+  - setuptools
+  - pip
+  - cudnn
+  - nvidia::cuda-toolkit
+  - pip:
+      - uv
