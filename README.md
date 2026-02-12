@@ -20,3 +20,16 @@ uv sync --all-groups
 ```bash
 uv add --group [name] <dep>
 ```
+
+## Scripts
+### 1. Download datasets
+- Kaggle
+```bash
+uv run python -m scripts.download_kaggle_datasets vivekanandabharupati/4k-images
+```
+
+### 2. Convert pytorch to tflite
+```bash
+
+uv run scripts/torch_to_tflite.py --model <model-path> --input-shape <e.g: 1 3 224 224> --output <output-path>
+```
