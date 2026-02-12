@@ -25,7 +25,7 @@ uv add --group [name] <dep>
 ### 1. Download datasets
 - Kaggle
 ```bash
-uv run python -m scripts.download_kaggle_datasets vivekanandabharupati/4k-images
+uv run scripts/download_kaggle_datasets.py vivekanandabharupati/4k-images
 ```
 
 ### 2. Convert pytorch to tflite
