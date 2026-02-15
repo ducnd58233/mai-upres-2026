@@ -5,14 +5,12 @@ import logging
 from pathlib import Path
 from typing import Final
 
+from configs import configure_logging
 from configs.setting import get_settings
 
-settings = get_settings()
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(levelname)s: %(message)s",
-)
+configure_logging()
 logger = logging.getLogger(__name__)
+settings = get_settings()
 
 DEFAULT_OUTPUT_ROOT: Final[Path] = Path("datasets")
 
