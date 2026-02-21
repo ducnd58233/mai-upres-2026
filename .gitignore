@@ -1,0 +1,115 @@
+# =========================
+# OS / Editor
+# =========================
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# =========================
+# Python
+# =========================
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+.ipynb_checkpoints/
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# =========================
+# Logs / temp
+# =========================
+*.log
+logs/
+log/
+tmp/
+temp/
+
+# =========================
+# Build / packaging
+# =========================
+build/
+dist/
+out/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+*.o
+*.obj
+*.so
+*.a
+*.dylib
+*.dll
+*.exe
+
+# =========================
+# ML artifacts (model weights, checkpoints)
+# (Giữ lại code + config, bỏ file nặng)
+# =========================
+checkpoints/
+ckpt/
+runs/
+wandb/
+mlruns/
+tensorboard/
+*.ckpt
+*.pth
+*.pt
+*.pkl
+*.joblib
+*.npz
+*.npy
+
+# If you want to version small sample models only, you can later unignore selectively.
+
+# =========================
+# Exported models / inference artifacts
+# =========================
+*.onnx
+*.tflite
+*.engine
+*.plan
+*.trt
+*.mlmodel
+
+# =========================
+# Data (thường rất nặng)
+# =========================
+data/
+datasets/
+dataset/
+images/
+videos/
+*.zip
+*.tar
+*.tar.gz
+*.7z
+
+# =========================
+# Jupyter / notebooks outputs
+# =========================
+*.ipynb
+# Nếu bạn muốn commit notebook thì xoá dòng trên và chỉ ignore checkpoint:
+# .ipynb_checkpoints/
+
+# =========================
+# Secrets (đừng push)
+# =========================
+.env
+.env.*
+*secret*
+*apikey*
+*token*
+credentials*.json
