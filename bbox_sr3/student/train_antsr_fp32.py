@@ -13,6 +13,8 @@ from tqdm import tqdm
 from typing import Optional, Dict, Tuple, List, Any
 from collections import OrderedDict
 
+from PIL import Image
+
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
@@ -88,7 +90,7 @@ def _ssim_per_channel(img1: torch.Tensor, img2: torch.Tensor, win: int = 11, sig
 
     sigma1_sq = blur(img1 * img1) - mu1_sq
     sigma2_sq = blur(img2 * img2) - mu2_sq
-    sigma12   = blur(img1 * img2) - mu12
+    sigma12 = blur(img1 * img2) - mu12
 
     L = 255.0
     C1 = (0.01 * L) ** 2
@@ -116,6 +118,7 @@ def validate_metrics_all(
     shaves = tuple(sorted(set(int(s) for s in shaves)))
 
     acc: Dict[str, List[float]] = {}
+
     def _push(k: str, v: float):
         acc.setdefault(k, []).append(v)
 
@@ -224,13 +227,14 @@ class EMA:
 # -------------------------
 _DCT_CACHE = {}
 
+
 def _get_dct_cache(N: int, device: torch.device, dtype: torch.dtype):
     key = (N, device.type, device.index if device.type == "cuda" else -1, dtype)
     if key in _DCT_CACHE:
         return _DCT_CACHE[key]
 
     even_idx = torch.arange(0, N, 2, device=device)
-    odd_idx  = torch.arange(N - 1, -1, -2, device=device)
+    odd_idx = torch.arange(N - 1, -1, -2, device=device)
 
     cplx_dtype = torch.complex64 if dtype == torch.float32 else torch.complex128
     k = torch.arange(N, device=device, dtype=dtype)
@@ -239,20 +243,23 @@ def _get_dct_cache(N: int, device: torch.device, dtype: torch.dtype):
     _DCT_CACHE[key] = {"even": even_idx, "odd": odd_idx, "W": W}
     return _DCT_CACHE[key]
 
+
 def _dct_1d(x: torch.Tensor, dim: int = -1) -> torch.Tensor:
     N = x.size(dim)
     cache = _get_dct_cache(N, x.device, x.dtype)
     even = x.index_select(dim, cache["even"])
-    odd  = x.index_select(dim, cache["odd"])
+    odd = x.index_select(dim, cache["odd"])
     v = torch.cat([even, odd], dim=dim)
     V = torch.fft.fft(v, dim=dim)
     out = (V * cache["W"]).real * 2.0
     return out
 
+
 def dct_2d(x: torch.Tensor) -> torch.Tensor:
     x = _dct_1d(x, dim=-1)
     x = _dct_1d(x, dim=-2)
     return x
+
 
 def dct_l1_loss(sr: torch.Tensor, hr: torch.Tensor) -> torch.Tensor:
     return torch.mean(torch.abs(dct_2d(sr) - dct_2d(hr)))
@@ -269,6 +276,7 @@ class TeacherCache:
       - cache_dir/{stem}.npz  (arr=HWC float16/float32)
     Returns crops in BCHW float32, range [0..255]
     """
+
     def __init__(self, cache_dir: str, max_keep: int = 64, prefer: str = "png"):
         self.cache_dir = cache_dir
         self.max_keep = int(max_keep)
@@ -288,22 +296,17 @@ class TeacherCache:
 
         arr = None
 
-        # Prefer png (best compression)
         if self.prefer == "png" and os.path.exists(p_png):
             im = Image.open(p_png).convert("RGB")
             arr = np.array(im)  # uint8 HWC
-
         elif os.path.exists(p_npy):
             arr = np.load(p_npy, mmap_mode="r")  # HWC float16/32
-
         elif os.path.exists(p_npz):
             z = np.load(p_npz)
             arr = z["arr"]
-
         elif os.path.exists(p_png):
             im = Image.open(p_png).convert("RGB")
             arr = np.array(im)
-
         else:
             raise FileNotFoundError(f"Teacher cache missing for stem={stem} in {self.cache_dir}")
 
@@ -342,11 +345,9 @@ def _normalize_metas(metas: Any, batch_size: int) -> Optional[List[Dict[str, Any
     if metas is None:
         return None
 
-    # Already list of dict
     if isinstance(metas, list) and (len(metas) == 0 or isinstance(metas[0], dict)):
         return metas
 
-    # Collated dict: {"stem": [..], "x": tensor([..]), ...}
     if isinstance(metas, dict):
         out: List[Dict[str, Any]] = []
         for i in range(batch_size):
@@ -358,8 +359,6 @@ def _normalize_metas(metas: Any, batch_size: int) -> Optional[List[Dict[str, Any
                     mi[k] = v[i]
                 else:
                     mi[k] = v
-            # stem sometimes comes as list[str] (ok)
-            # ensure stem is str
             if isinstance(mi.get("stem"), (list, tuple)):
                 mi["stem"] = mi["stem"][0]
             out.append(mi)
@@ -375,6 +374,7 @@ def channel_shuffle_rgb(lr: torch.Tensor, hr: torch.Tensor):
     perm = torch.randperm(3, device=lr.device)
     return lr[:, perm], hr[:, perm]
 
+
 @torch.no_grad()
 def apply_weight_clipping(model: torch.nn.Module, clip_other: float = 2.0, clip_rep: float = 3.0):
     for name, p in model.named_parameters():
@@ -384,6 +384,7 @@ def apply_weight_clipping(model: torch.nn.Module, clip_other: float = 2.0, clip_
             continue
         lim = clip_rep if "rep." in name else clip_other
         p.clamp_(-lim, lim)
+
 
 def freeze_bn_(model: torch.nn.Module):
     for m in model.modules():
@@ -400,12 +401,15 @@ def freeze_bn_(model: torch.nn.Module):
 # -------------------------
 def make_cosine_warmup_scheduler(opt, total_epochs: int, warmup_ratio: float = 0.1):
     warmup_epochs = max(1, int(total_epochs * warmup_ratio))
+
     def lr_lambda(ep: int):
         if ep < warmup_epochs:
             return float(ep + 1) / float(warmup_epochs)
         t = (ep - warmup_epochs) / max(1, (total_epochs - warmup_epochs))
         return 0.5 * (1.0 + math.cos(math.pi * t))
+
     return torch.optim.lr_scheduler.LambdaLR(opt, lr_lambda)
+
 
 def make_step_halve_scheduler(opt, step_size: int = 40, gamma: float = 0.5):
     return torch.optim.lr_scheduler.StepLR(opt, step_size=step_size, gamma=gamma)
@@ -422,9 +426,11 @@ def prepare_qat(model: torch.nn.Module, backend: str = "qnnpack") -> torch.nn.Mo
     tq.prepare_qat(model, inplace=True)
     return model
 
+
 def strip_qat_to_clean_state(clean_model: torch.nn.Module, qat_state: dict) -> dict:
     clean_sd = clean_model.state_dict()
     return {k: v for k, v in qat_state.items() if (k in clean_sd and v.shape == clean_sd[k].shape)}
+
 
 def qat_schedule_step(model: torch.nn.Module, local_ep: int,
                       disable_observer_ep: int, freeze_fakequant_ep: int):
@@ -457,6 +463,7 @@ def load_ckpt_weights(model, ckpt_path, device, prefer_ema: bool = True) -> dict
     model.to(device)
     return ckpt
 
+
 def load_teacher(teacher_ckpt_path: str, device: torch.device) -> torch.nn.Module:
     """
     Optional fallback teacher (AntSR). If you use teacher_cache_dir, you can skip this.
@@ -474,6 +481,64 @@ def load_teacher(teacher_ckpt_path: str, device: torch.device) -> torch.nn.Modul
 
 
 # -------------------------
+# Extra losses (training-only)
+# -------------------------
+def charbonnier_loss(x: torch.Tensor, y: torch.Tensor, eps: float = 1e-3) -> torch.Tensor:
+    return torch.mean(torch.sqrt((x - y) * (x - y) + eps * eps))
+
+
+def multiscale_aux_loss(sr01: torch.Tensor, hr01: torch.Tensor, aux_scale: float = 2/3) -> torch.Tensor:
+    # For x3 SR, aux_scale=2/3 gives ~x2 supervision (downsample 3x output to 2x)
+    sr2 = F.interpolate(sr01, scale_factor=aux_scale, mode="bicubic", align_corners=False)
+    hr2 = F.interpolate(hr01, scale_factor=aux_scale, mode="bicubic", align_corners=False)
+    return F.l1_loss(sr2, hr2)
+
+
+def haar_dwt2(x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    a = x[..., 0::2, 0::2]
+    b = x[..., 0::2, 1::2]
+    c = x[..., 1::2, 0::2]
+    d = x[..., 1::2, 1::2]
+    ll = (a + b + c + d) * 0.5
+    lh = (a - b + c - d) * 0.5
+    hl = (a + b - c - d) * 0.5
+    hh = (a - b - c + d) * 0.5
+    return ll, lh, hl, hh
+
+
+def haar_wavelet_loss(sr01: torch.Tensor, hr01: torch.Tensor, levels: int = 1) -> torch.Tensor:
+    loss = 0.0
+    x_s, x_h = sr01, hr01
+    for _ in range(max(1, int(levels))):
+        ll_s, lh_s, hl_s, hh_s = haar_dwt2(x_s)
+        ll_h, lh_h, hl_h, hh_h = haar_dwt2(x_h)
+        loss = loss + (F.l1_loss(lh_s, lh_h) + F.l1_loss(hl_s, hl_h) + F.l1_loss(hh_s, hh_h))
+        x_s, x_h = ll_s, ll_h
+    return loss
+
+
+# -------------------------
+# KD schedule helpers (epoch-based)
+# -------------------------
+def kd_linear_warmup_decay(
+    local_ep: int,
+    total_eps: int,
+    start: float,
+    end: float,
+    warmup_ratio: float = 0.15,
+) -> float:
+    total_eps = max(1, int(total_eps))
+    warm = max(0, min(total_eps, int(total_eps * warmup_ratio)))
+    if warm == 0:
+        t = local_ep / max(1, total_eps - 1)
+        return float(start + (end - start) * t)
+    if local_ep < warm:
+        return float(start)
+    t = (local_ep - warm) / max(1, (total_eps - warm - 1))
+    return float(start + (end - start) * t)
+
+
+# -------------------------
 # Loss builder (on 0..1)
 # -------------------------
 def compute_base_loss(
@@ -481,19 +546,30 @@ def compute_base_loss(
     sr01: torch.Tensor,
     hr01: torch.Tensor,
     dct_w: float,
+    charb_eps: float = 1e-3,
 ) -> torch.Tensor:
+    """
+    Back-compat:
+      - l1, l2, dct, l1dct, l2dct
+    Added:
+      - charb, charbdct
+    """
     mode = mode.lower()
-    if mode == "l1":
-        return F.l1_loss(sr01, hr01)
-    if mode == "l2":
-        return F.mse_loss(sr01, hr01)
+
     if mode == "dct":
         return dct_l1_loss(sr01, hr01)
-    if mode == "l1dct":
-        return F.l1_loss(sr01, hr01) + dct_w * dct_l1_loss(sr01, hr01)
-    if mode == "l2dct":
-        return F.mse_loss(sr01, hr01) + dct_w * dct_l1_loss(sr01, hr01)
-    raise ValueError(f"Unknown loss_mode: {mode}")
+
+    if mode.startswith("l2"):
+        base = F.mse_loss(sr01, hr01)
+    elif mode.startswith("charb"):
+        base = charbonnier_loss(sr01, hr01, eps=charb_eps)
+    else:
+        base = F.l1_loss(sr01, hr01)
+
+    if "dct" in mode:
+        base = base + float(dct_w) * dct_l1_loss(sr01, hr01)
+
+    return base
 
 
 # -------------------------
@@ -525,6 +601,13 @@ def train_stage(
     loss_mode: str = "l1",
     dct_w: float = 0.05,
 
+    # training-only extra losses
+    ms_w: float = 0.0,
+    ms_scale: float = 2/3,
+    wav_w: float = 0.0,
+    wav_levels: int = 1,
+    charb_eps: float = 1e-3,
+
     weight_clip: bool = True,
     wc_other: float = 2.0,
     wc_rep: float = 3.0,
@@ -539,6 +622,14 @@ def train_stage(
     kd_w: float = 0.0,
     kd_loss: str = "l1",
     kd_freq_w: float = 0.0,
+
+    # KD schedules (epoch-based; -1 disables)
+    kd_w_start: float = -1.0,
+    kd_w_end: float = -1.0,
+    kd_w_warmup: float = 0.15,
+    kd_freq_w_start: float = -1.0,
+    kd_freq_w_end: float = -1.0,
+    kd_freq_w_warmup: float = 0.15,
 
     # Teacher cache (for KD)
     teacher_cache_dir: Optional[str] = None,
@@ -566,10 +657,8 @@ def train_stage(
     else:
         sch = None
 
-    # KD cache
     tcache = TeacherCache(teacher_cache_dir) if teacher_cache_dir else None
 
-    # ---- RESUME ----
     local_ep_start = 0
     best_score = -1e9
     bn_frozen = False
@@ -603,7 +692,6 @@ def train_stage(
         local_ep_start = max(0, (last_epoch - start_epoch + 1))
         print(f"[resume] stage={stage_tag} last_epoch={last_epoch} -> local_ep_start={local_ep_start}/{epochs}")
 
-    # --------------------
     for local_ep in range(local_ep_start, epochs):
         ep = start_epoch + local_ep
 
@@ -614,12 +702,19 @@ def train_stage(
         if stage_tag.startswith("s3") and (qat_disable_observer_ep >= 0 or qat_freeze_fakequant_ep >= 0):
             qat_schedule_step(model, local_ep, qat_disable_observer_ep, qat_freeze_fakequant_ep)
 
+        # KD schedule weights (epoch-level)
+        kd_w_cur = kd_w
+        kd_freq_w_cur = kd_freq_w
+        if kd_w_start >= 0 and kd_w_end >= 0:
+            kd_w_cur = kd_linear_warmup_decay(local_ep, epochs, kd_w_start, kd_w_end, warmup_ratio=kd_w_warmup)
+        if kd_freq_w_start >= 0 and kd_freq_w_end >= 0:
+            kd_freq_w_cur = kd_linear_warmup_decay(local_ep, epochs, kd_freq_w_start, kd_freq_w_end, warmup_ratio=kd_freq_w_warmup)
+
         model.train()
         pbar = tqdm(train_loader, desc=f"[{stage_tag}] epoch {ep} lr={opt.param_groups[0]['lr']:.2e}")
         losses = []
 
         for batch in pbar:
-            # batch can be (lr,hr) OR (lr,hr,meta)
             if isinstance(batch, (list, tuple)) and len(batch) == 3:
                 lr_img, hr_img, metas = batch
             else:
@@ -638,14 +733,23 @@ def train_stage(
             sr01 = sr / 255.0
             hr01 = hr_img / 255.0
 
-            base = compute_base_loss(loss_mode, sr01, hr01, dct_w=dct_w)
+            base = compute_base_loss(loss_mode, sr01, hr01, dct_w=dct_w, charb_eps=charb_eps)
+
+            # Multi-scale aux
+            if ms_w and ms_w > 0:
+                base = base + float(ms_w) * multiscale_aux_loss(sr01, hr01, aux_scale=ms_scale)
+
+            # Haar wavelet loss
+            if wav_w and wav_w > 0:
+                base = base + float(wav_w) * haar_wavelet_loss(sr01, hr01, levels=wav_levels)
+
             loss = base
 
             # ---- KD ----
-            if kd_w > 0:
+            if kd_w_cur > 0:
                 t_sr = None
 
-                # 1) Prefer cache if available
+                # prefer cache if available
                 if tcache is not None and metas is not None:
                     metas_list = _normalize_metas(metas, batch_size=lr_img.size(0))
                     if metas_list is None:
@@ -653,32 +757,38 @@ def train_stage(
                     try:
                         t_sr = tcache.get_batch_crop_255(metas_list, device=device)
                     except Exception as e:
-                        # fallback to teacher if provided
                         if teacher is None:
                             raise RuntimeError(f"Teacher cache failed and no teacher provided. Error: {e}")
                         t_sr = None
 
-                # 2) Fallback to teacher forward
+                # fallback to teacher forward
                 if t_sr is None:
                     if teacher is None:
-                        raise RuntimeError("KD requested (kd_w>0) but no teacher and no teacher_cache_dir.")
+                        raise RuntimeError("KD requested but no teacher and no teacher_cache_dir.")
                     with torch.no_grad():
                         t_sr = teacher(lr_img).detach()
 
                 t01 = t_sr / 255.0
+
                 if kd_loss == "l2":
                     kd_pix = F.mse_loss(sr01, t01)
+                elif kd_loss == "charb":
+                    kd_pix = charbonnier_loss(sr01, t01, eps=charb_eps)
                 else:
                     kd_pix = F.l1_loss(sr01, t01)
-                loss = loss + kd_w * kd_pix
 
-                if kd_freq_w > 0:
-                    loss = loss + kd_freq_w * dct_l1_loss(sr01, t01)
+                loss = loss + kd_w_cur * kd_pix
+
+                if kd_freq_w_cur and kd_freq_w_cur > 0:
+                    loss = loss + kd_freq_w_cur * dct_l1_loss(sr01, t01)
 
             loss.backward()
             if grad_clip and grad_clip > 0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+
             opt.step()
+
+            # IMPORTANT ORDER: clip -> EMA
             if weight_clip:
                 apply_weight_clipping(model, clip_other=wc_other, clip_rep=wc_rep)
             if ema is not None:
@@ -719,9 +829,7 @@ def train_stage(
                 f"BI Y   sh0={_g('psnr_bi_y_sh0'):.4f}  sh3={_g('psnr_bi_y_sh3'):.4f}"
             )
             if report_ssim:
-                msg += (
-                    f" || SSIM(SR) sh0={_g('ssim_sr_rgb_sh0'):.5f} sh3={_g('ssim_sr_rgb_sh3'):.5f}"
-                )
+                msg += f" || SSIM(SR) sh0={_g('ssim_sr_rgb_sh0'):.5f} sh3={_g('ssim_sr_rgb_sh3'):.5f}"
             print(msg)
 
             cur_score = float(m_all.get(best_key, 0.0))
@@ -737,6 +845,8 @@ def train_stage(
                 "best_score": float(max(best_score, cur_score)),
                 "loss_mode": loss_mode,
                 "dct_w": float(dct_w),
+                "ms_w": float(ms_w),
+                "wav_w": float(wav_w),
                 "kd_w": float(kd_w),
                 "kd_freq_w": float(kd_freq_w),
                 "kd_loss": kd_loss,
@@ -835,13 +945,28 @@ def main():
     ap.add_argument("--patch2", type=int, default=128)
     ap.add_argument("--patch3", type=int, default=128)
 
-    ap.add_argument("--s1_loss", type=str, default="l1", choices=["l1", "l2", "dct", "l1dct", "l2dct"])
-    ap.add_argument("--s2_loss", type=str, default="l2", choices=["l1", "l2", "dct", "l1dct", "l2dct"])
-    ap.add_argument("--s3_loss", type=str, default="l1dct", choices=["l1", "l2", "dct", "l1dct", "l2dct"])
+    # Loss modes (extended)
+    loss_choices = ["l1", "l2", "charb", "dct", "l1dct", "l2dct", "charbdct"]
+    ap.add_argument("--s1_loss", type=str, default="l1", choices=loss_choices)
+    ap.add_argument("--s2_loss", type=str, default="l2", choices=loss_choices)
+    ap.add_argument("--s3_loss", type=str, default="l1dct", choices=loss_choices)
 
     ap.add_argument("--dct_w_s1", type=float, default=0.0)
     ap.add_argument("--dct_w_s2", type=float, default=0.0)
     ap.add_argument("--dct_w_s3", type=float, default=0.05)
+
+    # Training-only extra losses
+    ap.add_argument("--ms_w_s1", type=float, default=0.0)
+    ap.add_argument("--ms_w_s2", type=float, default=0.10)
+    ap.add_argument("--ms_w_s3", type=float, default=0.0)
+    ap.add_argument("--ms_scale", type=float, default=2/3)
+
+    ap.add_argument("--wav_w_s1", type=float, default=0.0)
+    ap.add_argument("--wav_w_s2", type=float, default=0.02)
+    ap.add_argument("--wav_w_s3", type=float, default=0.01)
+    ap.add_argument("--wav_levels", type=int, default=1)
+
+    ap.add_argument("--charb_eps", type=float, default=1e-3)
 
     ap.add_argument("--scheduler1", type=str, default="cos_warmup", choices=["none", "cos_warmup"])
     ap.add_argument("--scheduler2", type=str, default="step_halve", choices=["none", "step_halve"])
@@ -854,7 +979,6 @@ def main():
     ap.add_argument("--ema", action=argparse.BooleanOptionalAction, default=True)
     ap.add_argument("--ema_decay", type=float, default=0.999)
 
-    # Optional fallback teacher (AntSR). If you use teacher_cache_dir, you can omit teacher_ckpt.
     ap.add_argument("--teacher_ckpt", type=str, default=None)
     ap.add_argument("--teacher_from_stage2", action=argparse.BooleanOptionalAction, default=True)
 
@@ -862,7 +986,16 @@ def main():
     ap.add_argument("--kd_w_s2", type=float, default=0.0)
     ap.add_argument("--kd_w_s3", type=float, default=0.02)
     ap.add_argument("--kd_freq_w_s3", type=float, default=0.01)
-    ap.add_argument("--kd_loss", type=str, default="l1", choices=["l1", "l2"])
+    ap.add_argument("--kd_loss", type=str, default="l1", choices=["l1", "l2", "charb"])
+
+    # KD schedules (stage3; set start/end=-1 to disable schedule)
+    ap.add_argument("--kd_w_s3_start", type=float, default=0.08)
+    ap.add_argument("--kd_w_s3_end", type=float, default=0.02)
+    ap.add_argument("--kd_w_s3_warmup", type=float, default=0.15)
+
+    ap.add_argument("--kd_freq_w_s3_start", type=float, default=0.02)
+    ap.add_argument("--kd_freq_w_s3_end", type=float, default=0.01)
+    ap.add_argument("--kd_freq_w_s3_warmup", type=float, default=0.15)
 
     ap.add_argument("--freeze_bn_epoch", type=int, default=80)
 
@@ -971,7 +1104,7 @@ def main():
     # ---- Stage 1 ----
     if args.epochs1 > 0 and (resume_stage is None or resume_stage == "s1_fp32"):
         model.set_out_clamp_mode(args.out_clamp_fp32)
-        train_loader = make_train_loader(args.patch1)
+        train_loader = make_train_loader(args.patch1, augment=True)
         s1_best = train_stage(
             model, train_loader, val_loader, device,
             epochs=args.epochs1, base_lr=args.lr1, out_dir=run_dir,
@@ -981,6 +1114,9 @@ def main():
             grad_clip=args.grad_clip, scheduler_type=args.scheduler1,
             channel_shuffle=False,
             loss_mode=args.s1_loss, dct_w=args.dct_w_s1,
+            ms_w=args.ms_w_s1, ms_scale=args.ms_scale,
+            wav_w=args.wav_w_s1, wav_levels=args.wav_levels,
+            charb_eps=args.charb_eps,
             weight_clip=False, val_every=args.val_every,
             ema=ema,
             teacher=teacher, kd_w=args.kd_w_s1, kd_loss=args.kd_loss, kd_freq_w=0.0,
@@ -996,7 +1132,7 @@ def main():
     s2_export_path = os.path.join(run_dir, "ckpt_best_s2_deploy.pt")
     if args.epochs2 > 0 and (resume_stage is None or resume_stage == "s2_fp32"):
         model.set_out_clamp_mode(args.out_clamp_fp32)
-        train_loader = make_train_loader(args.patch2)
+        train_loader = make_train_loader(args.patch2, augment=True)
         start_ep = args.epochs1
         s2_best = train_stage(
             model, train_loader, val_loader, device,
@@ -1007,6 +1143,9 @@ def main():
             grad_clip=args.grad_clip, scheduler_type=args.scheduler2,
             channel_shuffle=args.channel_shuffle_s2s3,
             loss_mode=args.s2_loss, dct_w=args.dct_w_s2,
+            ms_w=args.ms_w_s2, ms_scale=args.ms_scale,
+            wav_w=args.wav_w_s2, wav_levels=args.wav_levels,
+            charb_eps=args.charb_eps,
             weight_clip=args.weight_clipping, wc_other=args.wc_other, wc_rep=args.wc_rep,
             val_every=args.val_every,
             ema=ema,
@@ -1039,9 +1178,9 @@ def main():
     if args.qat and args.epochs3 > 0 and (resume_stage is None or resume_stage == "s3_qat"):
         model.set_out_clamp_mode(args.out_clamp_qat)
 
-        # IMPORTANT: stage3 uses subset + meta if teacher_cache_dir is provided
         use_meta = (args.teacher_cache_dir is not None)
         s3_bs = 1 if args.stage3_batch1 else args.batch
+
         train_loader = make_train_loader(
             args.patch3,
             id_list_txt=args.stage3_ids_txt,
@@ -1074,6 +1213,9 @@ def main():
             grad_clip=args.grad_clip, scheduler_type=args.scheduler3,
             channel_shuffle=False if (args.teacher_cache_dir is not None or args.kd_w_s3 > 0) else args.channel_shuffle_s2s3,
             loss_mode=args.s3_loss, dct_w=args.dct_w_s3,
+            ms_w=args.ms_w_s3, ms_scale=args.ms_scale,
+            wav_w=args.wav_w_s3, wav_levels=args.wav_levels,
+            charb_eps=args.charb_eps,
             weight_clip=args.weight_clipping, wc_other=args.wc_other, wc_rep=args.wc_rep,
             val_every=args.val_every,
             ema=ema_qat,
@@ -1081,7 +1223,9 @@ def main():
             kd_w=args.kd_w_s3,
             kd_loss=args.kd_loss,
             kd_freq_w=args.kd_freq_w_s3,
-            teacher_cache_dir=args.teacher_cache_dir,  # <<< KD from cache
+            kd_w_start=args.kd_w_s3_start, kd_w_end=args.kd_w_s3_end, kd_w_warmup=args.kd_w_s3_warmup,
+            kd_freq_w_start=args.kd_freq_w_s3_start, kd_freq_w_end=args.kd_freq_w_s3_end, kd_freq_w_warmup=args.kd_freq_w_s3_warmup,
+            teacher_cache_dir=args.teacher_cache_dir,
             freeze_bn_epoch=args.freeze_bn_epoch,
             qat_disable_observer_ep=args.qat_disable_observer_ep,
             qat_freeze_fakequant_ep=args.qat_freeze_fakequant_ep,
