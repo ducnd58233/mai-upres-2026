@@ -263,21 +263,50 @@ def dct_l1_loss(sr: torch.Tensor, hr: torch.Tensor) -> torch.Tensor:
 # -------------------------
 class TeacherCache:
     """
-    Expects cache_dir/{stem}.npy saved as HWC float16 in [0..255]
-    Crops teacher SR using meta (stem, x, y, ps, scale).
+    Supports:
+      - cache_dir/{stem}.png  (uint8 RGB)
+      - cache_dir/{stem}.npy  (HWC float16/float32)
+      - cache_dir/{stem}.npz  (arr=HWC float16/float32)
+    Returns crops in BCHW float32, range [0..255]
     """
-    def __init__(self, cache_dir: str, max_keep: int = 64):
+    def __init__(self, cache_dir: str, max_keep: int = 64, prefer: str = "png"):
         self.cache_dir = cache_dir
-        self.max_keep = max_keep
-        self.mem = OrderedDict()  # stem -> np array HWC float16
+        self.max_keep = int(max_keep)
+        self.prefer = prefer
+        self.mem = OrderedDict()  # stem -> np array HWC (float32 or uint8)
 
-    def _load(self, stem: str):
+    def _load_any(self, stem: str) -> np.ndarray:
+        # LRU cache
         if stem in self.mem:
             arr = self.mem.pop(stem)
             self.mem[stem] = arr
             return arr
-        p = os.path.join(self.cache_dir, f"{stem}.npy")
-        arr = np.load(p)  # HWC float16
+
+        p_png = os.path.join(self.cache_dir, f"{stem}.png")
+        p_npy = os.path.join(self.cache_dir, f"{stem}.npy")
+        p_npz = os.path.join(self.cache_dir, f"{stem}.npz")
+
+        arr = None
+
+        # Prefer png (best compression)
+        if self.prefer == "png" and os.path.exists(p_png):
+            im = Image.open(p_png).convert("RGB")
+            arr = np.array(im)  # uint8 HWC
+
+        elif os.path.exists(p_npy):
+            arr = np.load(p_npy, mmap_mode="r")  # HWC float16/32
+
+        elif os.path.exists(p_npz):
+            z = np.load(p_npz)
+            arr = z["arr"]
+
+        elif os.path.exists(p_png):
+            im = Image.open(p_png).convert("RGB")
+            arr = np.array(im)
+
+        else:
+            raise FileNotFoundError(f"Teacher cache missing for stem={stem} in {self.cache_dir}")
+
         self.mem[stem] = arr
         if len(self.mem) > self.max_keep:
             self.mem.popitem(last=False)
@@ -286,15 +315,23 @@ class TeacherCache:
     def get_batch_crop_255(self, metas_list: List[Dict[str, Any]], device):
         crops = []
         for m in metas_list:
-            arr = self._load(m["stem"])
+            arr = self._load_any(m["stem"])  # HWC
             x, y = int(m["x"]), int(m["y"])
             ps, scale = int(m["ps"]), int(m["scale"])
             xs, ys = x * scale, y * scale
             hs = ps * scale
-            crop = arr[ys:ys+hs, xs:xs+hs, :]  # HWC
-            t = torch.from_numpy(crop.astype(np.float32)).permute(2, 0, 1)  # CHW
+
+            crop = arr[ys:ys + hs, xs:xs + hs, :]  # HWC
+
+            if crop.dtype == np.uint8:
+                t = torch.from_numpy(crop).to(torch.float32)  # HWC float
+            else:
+                t = torch.from_numpy(crop.astype(np.float32))
+
+            t = t.permute(2, 0, 1)  # CHW
             crops.append(t)
-        return torch.stack(crops, 0).to(device)  # BCHW
+
+        return torch.stack(crops, 0).to(device)  # BCHW float32 [0..255]
 
 
 def _normalize_metas(metas: Any, batch_size: int) -> Optional[List[Dict[str, Any]]]:
@@ -642,12 +679,10 @@ def train_stage(
             if grad_clip and grad_clip > 0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
             opt.step()
-
-            if ema is not None:
-                ema.update(model)
-
             if weight_clip:
                 apply_weight_clipping(model, clip_other=wc_other, clip_rep=wc_rep)
+            if ema is not None:
+                ema.update(model)
 
             losses.append(loss.item())
             pbar.set_postfix(loss=float(np.mean(losses)))
@@ -869,10 +904,10 @@ def main():
 
     train_hr, train_lr, valid_hr, valid_lr = resolve_div2k_paths(args.data_root, scale=3)
 
-    def make_train_loader(lr_patch: int, id_list_txt=None, return_meta=False, batch_override=None):
+    def make_train_loader(lr_patch: int, id_list_txt=None, return_meta=False, batch_override=None, augment=True):
         train_ds = DIV2KPairX3(
             train_hr, train_lr,
-            train=True, lr_patch=lr_patch, augment=True, repeat=1,
+            train=True, lr_patch=lr_patch, augment=augment, repeat=1,
             id_list_txt=id_list_txt,
             return_meta=return_meta
         )
@@ -1011,7 +1046,8 @@ def main():
             args.patch3,
             id_list_txt=args.stage3_ids_txt,
             return_meta=use_meta,
-            batch_override=s3_bs
+            batch_override=s3_bs,
+            augment=False if (args.teacher_cache_dir is not None) else True
         )
 
         start_ep = args.epochs1 + args.epochs2
@@ -1036,7 +1072,7 @@ def main():
             val_shaves=val_shaves, best_key=args.best_key,
             report_ssim=args.report_ssim, ssim_win=args.ssim_win, ssim_sigma=args.ssim_sigma,
             grad_clip=args.grad_clip, scheduler_type=args.scheduler3,
-            channel_shuffle=args.channel_shuffle_s2s3,
+            channel_shuffle=False if (args.teacher_cache_dir is not None or args.kd_w_s3 > 0) else args.channel_shuffle_s2s3,
             loss_mode=args.s3_loss, dct_w=args.dct_w_s3,
             weight_clip=args.weight_clipping, wc_other=args.wc_other, wc_rep=args.wc_rep,
             val_every=args.val_every,

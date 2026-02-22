@@ -1,6 +1,8 @@
+import os
 import sys
 from typing import Dict, Any
 import torch
+
 
 def _pick_state_dict(ckpt: Any) -> Dict[str, torch.Tensor]:
     if isinstance(ckpt, dict):
@@ -11,8 +13,9 @@ def _pick_state_dict(ckpt: Any) -> Dict[str, torch.Tensor]:
             return ckpt
     raise RuntimeError("Unknown checkpoint format")
 
+
 def build_mambairv2_lightsr_x3(mambair_repo: str):
-    sys.path.insert(0, mambair_repo)
+    sys.path.insert(0, os.path.abspath(mambair_repo))
     from basicsr.archs.mambairv2light_arch import MambaIRv2Light
 
     net = MambaIRv2Light(
@@ -34,7 +37,8 @@ def build_mambairv2_lightsr_x3(mambair_repo: str):
     )
     return net
 
-@torch.no_grad()
+
+@torch.inference_mode()
 def load_teacher(mambair_repo: str, ckpt_path: str, device="cuda"):
     net = build_mambairv2_lightsr_x3(mambair_repo)
     ckpt = torch.load(ckpt_path, map_location="cpu")

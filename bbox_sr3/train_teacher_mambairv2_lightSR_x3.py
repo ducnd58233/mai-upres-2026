@@ -1,15 +1,21 @@
 import os, math, argparse
-from itertools import cycle
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from bbox_sr3.mambair_teacher import build_mambairv2_lightsr_x3, _pick_state_dict
-from bbox_sr3.teacher_dataset_mix import RandomHRMixOnTheFlyLR
+
+# robust import (tuỳ bạn đặt file ở đâu)
+try:
+    from bbox_sr3.teacher_dataset_mix import RandomHRMixOnTheFlyLR
+except Exception:
+    from teacher_dataset_mix import RandomHRMixOnTheFlyLR
+
 
 def charbonnier(x, y, eps=1e-3):
     return torch.mean(torch.sqrt((x - y) ** 2 + eps * eps))
+
 
 def psnr01(pred01: torch.Tensor, gt01: torch.Tensor, eps=1e-12) -> float:
     mse = torch.mean((pred01 - gt01) ** 2).item()
@@ -17,7 +23,8 @@ def psnr01(pred01: torch.Tensor, gt01: torch.Tensor, eps=1e-12) -> float:
         return 99.0
     return 10.0 * math.log10(1.0 / mse)
 
-@torch.no_grad()
+
+@torch.inference_mode()
 def validate_div2k_paired(model, val_lr_dir, val_hr_dir, scale=3, max_imgs=50, device="cuda"):
     import glob
     from PIL import Image
@@ -40,8 +47,8 @@ def validate_div2k_paired(model, val_lr_dir, val_hr_dir, scale=3, max_imgs=50, d
         lr = np.array(Image.open(lr_p).convert("RGB"), dtype=np.float32) / 255.0
         hr = np.array(Image.open(hr_p).convert("RGB"), dtype=np.float32) / 255.0
 
-        lr_t = torch.from_numpy(lr).permute(2,0,1).unsqueeze(0).to(device)
-        hr_t = torch.from_numpy(hr).permute(2,0,1).unsqueeze(0).to(device)
+        lr_t = torch.from_numpy(lr).permute(2, 0, 1).unsqueeze(0).to(device)
+        hr_t = torch.from_numpy(hr).permute(2, 0, 1).unsqueeze(0).to(device)
 
         sr = model(lr_t)
         H, W = hr_t.shape[-2:]
@@ -51,8 +58,10 @@ def validate_div2k_paired(model, val_lr_dir, val_hr_dir, scale=3, max_imgs=50, d
 
     return float(sum(psnrs) / max(1, len(psnrs)))
 
+
 def make_lr_schedule(opt, total_iters: int, milestones=(0.6, 0.9), gamma=0.5):
     ms = [int(total_iters * m) for m in milestones]
+
     def step(it):
         k = 0
         for m in ms:
@@ -60,7 +69,9 @@ def make_lr_schedule(opt, total_iters: int, milestones=(0.6, 0.9), gamma=0.5):
                 k += 1
         for g in opt.param_groups:
             g["lr"] = g["initial_lr"] * (gamma ** k)
+
     return step
+
 
 def multiscale_loss(sr01, hr01, base="l1"):
     if base == "l2":
@@ -71,14 +82,18 @@ def multiscale_loss(sr01, hr01, base="l1"):
         l0 = F.l1_loss(sr01, hr01)
 
     # extra supervision ~x2 (downsample by 2/3)
-    sr2 = F.interpolate(sr01, scale_factor=2/3, mode="bicubic", align_corners=False)
-    hr2 = F.interpolate(hr01, scale_factor=2/3, mode="bicubic", align_corners=False)
+    sr2 = F.interpolate(sr01, scale_factor=2 / 3, mode="bicubic", align_corners=False)
+    hr2 = F.interpolate(hr01, scale_factor=2 / 3, mode="bicubic", align_corners=False)
     l2 = F.l1_loss(sr2, hr2)
     return l0 + 0.2 * l2
 
+
 def infinite_loader(loader):
-    for batch in cycle(loader):
-        yield batch
+    # FIX: no itertools.cycle (cycle caches batches and can blow RAM)
+    while True:
+        for batch in loader:
+            yield batch
+
 
 def main():
     ap = argparse.ArgumentParser()
@@ -127,6 +142,8 @@ def main():
     device = torch.device("cuda" if args.device == "cuda" and torch.cuda.is_available() else "cpu")
     os.makedirs(args.out_dir, exist_ok=True)
 
+    torch.backends.cudnn.benchmark = True
+
     model = build_mambairv2_lightsr_x3(args.mambair_repo).to(device)
 
     ckpt = torch.load(args.init_ckpt, map_location="cpu")
@@ -134,16 +151,13 @@ def main():
     model.load_state_dict(sd, strict=True)
     print("[init] loaded:", args.init_ckpt)
 
-    opt = torch.optim.Adam(model.parameters(), lr=args.lr1)
-    for g in opt.param_groups:
-        g["initial_lr"] = g["lr"]
-
-    scaler = torch.cuda.amp.GradScaler(enabled=(args.amp and device.type == "cuda"))
-
     def run_stage(stage_name, iters, lr_patch, batch, base_lr, loss_base):
+        # RESET optimizer each stage (recommended)
+        opt = torch.optim.Adam(model.parameters(), lr=base_lr)
         for g in opt.param_groups:
-            g["lr"] = base_lr
             g["initial_lr"] = base_lr
+
+        scaler = torch.cuda.amp.GradScaler(enabled=(args.amp and device.type == "cuda"))
 
         ds = RandomHRMixOnTheFlyLR(
             [args.div2k_hr, args.flickr2k_hr, args.lsdir_hr],
@@ -153,9 +167,11 @@ def main():
             num_samples=max(2000000, iters * batch),
             weights=[args.w_div2k, args.w_flickr2k, args.w_lsdir],
         )
-        loader = DataLoader(ds, batch_size=batch, shuffle=True,
-                            num_workers=args.num_workers, drop_last=True,
-                            pin_memory=(device.type == "cuda"))
+        loader = DataLoader(
+            ds, batch_size=batch, shuffle=True,
+            num_workers=args.num_workers, drop_last=True,
+            pin_memory=(device.type == "cuda")
+        )
         it_loader = infinite_loader(loader)
         lr_step = make_lr_schedule(opt, total_iters=iters, milestones=(0.6, 0.9), gamma=0.5)
 
@@ -169,8 +185,8 @@ def main():
         for it in pbar:
             lr_step(it)
             lr01, hr01 = next(it_loader)
-            lr01 = lr01.to(device)
-            hr01 = hr01.to(device)
+            lr01 = lr01.to(device, non_blocking=True)
+            hr01 = hr01.to(device, non_blocking=True)
 
             opt.zero_grad(set_to_none=True)
             with torch.cuda.amp.autocast(enabled=(args.amp and device.type == "cuda")):
@@ -191,8 +207,10 @@ def main():
                 torch.save({"params": model.state_dict(), "stage": stage_name, "iter": it}, last_path)
 
             if (it % args.val_every == 0) or (it == iters):
-                v = validate_div2k_paired(model, args.div2k_val_lr, args.div2k_val_hr,
-                                          scale=args.scale, max_imgs=args.val_max, device=device)
+                v = validate_div2k_paired(
+                    model, args.div2k_val_lr, args.div2k_val_hr,
+                    scale=args.scale, max_imgs=args.val_max, device=device
+                )
                 pbar.write(f"[val] {stage_name} iter={it} PSNR={v:.4f}")
                 if v > best_psnr:
                     best_psnr = v
@@ -203,10 +221,12 @@ def main():
 
     run_stage("s1", args.iters1, args.patch1, args.batch1, args.lr1, loss_base="l1")
     run_stage("s2", args.iters2, args.patch2, args.batch2, args.lr2, loss_base="l2")
+    # stage3: bạn có thể thử "charb" thay vì "l1" nếu muốn teacher mượt hơn cho KD
     run_stage("s3", args.iters3, args.patch3, args.batch3, args.lr3, loss_base="l1")
 
     print("[DONE] Teacher training finished.")
     print("Best ckpt:", os.path.join(args.out_dir, "teacher_best.pth"))
+
 
 if __name__ == "__main__":
     main()
