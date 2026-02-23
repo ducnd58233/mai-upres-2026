@@ -2,6 +2,11 @@
 import argparse, collections
 import tflite_runtime.interpreter as tflite
 
+def _qstr(d):
+    q = d.get("quantization", None)
+    qp = d.get("quantization_parameters", None)
+    return {"quantization": q, "quantization_parameters": qp}
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", required=True)
@@ -11,8 +16,16 @@ def main():
     itp = tflite.Interpreter(model_path=args.model, num_threads=args.threads)
     itp.allocate_tensors()
 
-    print("INPUT:", [(i["name"], i["shape"], i["dtype"], i.get("quantization")) for i in itp.get_input_details()])
-    print("OUTPUT:", [(o["name"], o["shape"], o["dtype"], o.get("quantization")) for o in itp.get_output_details()])
+    ins = itp.get_input_details()
+    outs = itp.get_output_details()
+
+    print("INPUT:")
+    for i in ins:
+        print(" ", i["name"], i["shape"], i["dtype"], _qstr(i))
+
+    print("OUTPUT:")
+    for o in outs:
+        print(" ", o["name"], o["shape"], o["dtype"], _qstr(o))
 
     hist = collections.Counter(str(t["dtype"]) for t in itp.get_tensor_details())
     print("dtype histogram:", dict(hist))
