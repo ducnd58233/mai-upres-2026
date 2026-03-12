@@ -1,0 +1,10 @@
+stage=s2_fp32
+best_epoch=816
+best_psnr_sr_rgb_sh0=30.270461628667405
+best_psnr_sr_rgb_sh3=
+best_psnr_sr_y_sh0=30.40626357540439
+best_psnr_sr_y_sh3=
+best_ssim_sr_rgb_sh0=0.8626441270112991
+best_ssim_sr_rgb_sh3=
+train_loss_at_best=0.4982172161340713
+lr_at_best=4.6875e-07

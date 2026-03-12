@@ -1,0 +1,10 @@
+stage=s3_qat
+best_epoch=956
+best_psnr_sr_rgb_sh0=30.119882903093185
+best_psnr_sr_rgb_sh3=
+best_psnr_sr_y_sh0=30.298720778679108
+best_psnr_sr_y_sh3=
+best_ssim_sr_rgb_sh0=0.8586385649442673
+best_ssim_sr_rgb_sh3=
+train_loss_at_best=0.34089807940647
+lr_at_best=2.5e-07
